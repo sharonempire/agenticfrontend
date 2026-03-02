@@ -13,19 +13,23 @@ class AppStrings {
   static const String notifications = 'Notifications';
   static const String settings = 'Settings';
 
-  static const String courseSearchHint = 'Search courses, skills, providers…';
-  static const String jobSearchHint = 'Job title, company, or skill…';
+  static const String courseSearchHint = 'Search courses, skills, providers...';
+  static const String jobSearchHint = 'Job title, company, or skill...';
 
   static const String noCoursesTitle = 'No courses found';
-  static const String noCoursesSubtitle = 'Try adjusting your search or filters';
+  static const String noCoursesSubtitle =
+      'Try adjusting your search or filters';
   static const String noJobsTitle = 'No jobs found';
-  static const String noJobsSubtitle = 'Try different keywords or broaden your filters';
+  static const String noJobsSubtitle =
+      'Try different keywords or broaden your filters';
   static const String noSavedTitle = 'Nothing saved yet';
-  static const String noSavedSubtitle = 'Bookmark jobs you like to find them here';
+  static const String noSavedSubtitle =
+      'Bookmark jobs you like to find them here';
   static const String errorTitle = 'Something went wrong';
   static const String errorSubtitle = 'Please try again';
   static const String noInternetTitle = 'No Internet';
-  static const String noInternetSubtitle = 'Check your connection and try again';
+  static const String noInternetSubtitle =
+      'Check your connection and try again';
 
   static const String retry = 'Retry';
   static const String enrollNow = 'Enroll Now';
@@ -45,4 +49,15 @@ class AppStrings {
   static const String email = 'Email';
   static const String password = 'Password';
   static const String forgotPassword = 'Forgot Password?';
+
+  static const String recommendedCourses = 'Recommended Courses';
+  static const String latestJobs = 'Latest Jobs';
+  static const String smartRecommendations = 'Smart Recommendations';
+  static const String aiSuggestionsSubtitle =
+      'Get AI-powered course and job suggestions';
+  static const String discoverToday = 'Discover your next move';
+  static const String discoverSubtitle =
+      'Curated paths and roles matched to your profile';
+  static const String courseCardsPlaceholder = 'Course cards load here';
+  static const String jobCardsPlaceholder = 'Job cards load here';
 }
