@@ -1,235 +1,124 @@
-# Full Development Report — Agentic Frontend
+# Full Development Report — Agentic Frontend (v2)
 
-> **Purpose**: Hand-off document for backend developers. Describes every API contract the Flutter app expects, the exact request/response shapes, authentication flow, error handling, and integration requirements.
+> **Purpose**: Hand-off document for backend developers. Describes every API contract the Flutter app expects, exact request/response shapes, authentication flow, error handling, navigation structure, state management, and integration requirements.
+>
+> **Architecture**: BLoC + GetIt + GoRouter (migrated from Riverpod)
 
 ---
 
 ## 1. Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      Flutter UI                          │
-│  (Screens / Widgets / Controllers)                       │
-└────────────────────┬─────────────────────────────────────┘
-                     │  ref.watch(courseRepositoryProvider)
-                     │  ref.watch(jobRepositoryProvider)
-                     │  ref.watch(searchRepositoryProvider)
-                     │  ref.watch(aiCopilotRepositoryProvider)
-                     ▼
-┌──────────────────────────────────────────────────────────┐
-│            Riverpod Providers (providers.dart)            │
-└────────────────────┬─────────────────────────────────────┘
-                     ▼
-┌──────────────────────────────────────────────────────────┐
-│         Compatibility Adapters (compat/*.dart)            │
-│   ┌──────────────────────────────────────────────┐       │
-│   │  if (mode == supabaseOnly) → Supabase        │       │
-│   │  if (mode == fastapiPreferred) →              │       │
-│   │      try FastAPI → on failure → Supabase      │       │
-│   │  if (mode == fastapiOnly) → FastAPI           │       │
-│   └──────────────────────────────────────────────┘       │
-└────────┬──────────────────────────┬──────────────────────┘
-         ▼                          ▼
-┌─────────────────┐      ┌─────────────────────┐
-│  FastAPI Repos   │      │  Supabase Repos      │
-│  (Dio + Client)  │      │  (supabase_flutter)  │
-└────────┬─────────┘      └──────────┬───────────┘
-         ▼                           ▼
-   FastAPI Backend             Supabase Cloud
-   http://localhost:8000       https://xxx.supabase.co
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Flutter App                                 │
+│                                                                      │
+│  ┌──────────┐   ┌────────────┐   ┌──────────────────────────┐       │
+│  │  GoRouter │──▶│    BLoC    │──▶│   Compat Repository      │       │
+│  │  (pages)  │   │  (state)   │   │  (routing + fallback)    │       │
+│  └──────────┘   └────────────┘   └────────┬─────────┬───────┘       │
+│                                           │         │                │
+│                   ┌───────────────────────┘         │                │
+│                   ▼                                 ▼                │
+│         ┌─────────────────┐              ┌──────────────────┐       │
+│         │  FastAPI Repo   │              │  Supabase Repo   │       │
+│         │  (Dio client)   │              │  (Supabase SDK)  │       │
+│         └────────┬────────┘              └────────┬─────────┘       │
+└──────────────────┼────────────────────────────────┼──────────────────┘
+                   │                                │
+                   ▼                                ▼
+          ┌────────────────┐              ┌──────────────────┐
+          │  FastAPI Server │              │   Supabase DB    │
+          │  (your backend) │              │   (PostgreSQL)   │
+          └────────────────┘              └──────────────────┘
 ```
 
-**State management**: Riverpod 2.x
-**HTTP client**: Dio 5.x
-**Auth storage**: flutter_secure_storage
-**Environment**: flutter_dotenv (.env file)
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| State Management | flutter_bloc | Predictable, testable, event-driven |
+| Dependency Injection | GetIt (`sl` global) | Simple service locator, lazy singletons |
+| Navigation | GoRouter + StatefulShellRoute | Declarative, deep-link ready, 5-tab shell |
+| HTTP Client | Dio (4-interceptor chain) | Auth, correlation IDs, logging, retry |
+| Backend Strategy | Compat adapter (FastAPI → Supabase fallback) | Zero-downtime migration |
+| Feature Flags | Per-module `.env` toggles | Gradual rollout per module |
 
 ---
 
-## 2. Project File Map
+## 2. Environment Configuration
 
-```
-lib/
-├── main.dart                                    # App entry, init Supabase + dotenv
-├── config/
-│   ├── env_config.dart                          # All .env vars centralized
-│   ├── backend_mode.dart                        # BackendMode enum (3 modes)
-│   └── feature_flags.dart                       # Per-module on/off toggles
-├── core/
-│   ├── error/
-│   │   ├── app_exception.dart                   # Typed exception hierarchy (sealed)
-│   │   └── fallback_helper.dart                 # Decides when to fallback
-│   ├── network/
-│   │   └── fastapi_client.dart                  # Dio client + interceptor chain
-│   └── storage/
-│       └── token_storage.dart                   # Secure FastAPI JWT storage
-├── models/
-│   ├── auth/auth_models.dart                    # BackendTokens, BackendProfile
-│   ├── ai_copilot/ai_copilot.dart               # CopilotEvent, Recommendation, etc.
-│   ├── common/
-│   │   ├── api_result.dart                      # ApiResult<T> sealed type
-│   │   └── paginated_response.dart              # PaginatedResponse<T>
-│   ├── course/course.dart                       # Course model + CourseFilter
-│   ├── job/job.dart                             # Job model + JobFilter
-│   └── search/search_result.dart                # SearchResult + SearchQuery
-├── providers/
-│   └── providers.dart                           # All Riverpod provider wiring
-├── repositories/
-│   ├── course_repository.dart                   # Abstract interface
-│   ├── job_repository.dart                      # Abstract interface
-│   ├── search_repository.dart                   # Abstract interface
-│   ├── ai_copilot_repository.dart               # Abstract interface
-│   ├── supabase/
-│   │   ├── supabase_course_repository.dart
-│   │   ├── supabase_job_repository.dart
-│   │   └── supabase_search_repository.dart
-│   ├── fastapi/
-│   │   ├── fastapi_course_repository.dart
-│   │   ├── fastapi_job_repository.dart
-│   │   ├── fastapi_search_repository.dart
-│   │   └── fastapi_ai_copilot_repository.dart
-│   └── compat/
-│       ├── course_repository_compat.dart
-│       ├── job_repository_compat.dart
-│       ├── search_repository_compat.dart
-│       └── ai_copilot_repository_compat.dart
-test/
-├── widget_test.dart
-└── repositories/
-    ├── course_repository_compat_test.dart       # 12 tests
-    └── job_repository_compat_test.dart          # 11 tests
-```
+### `.env` Variables
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SUPABASE_URL` | String | (required) | Supabase project URL |
+| `SUPABASE_ANON_KEY` | String | (required) | Supabase anonymous key |
+| `FASTAPI_BASE_URL` | String | `http://localhost:8000` | FastAPI server base URL |
+| `FASTAPI_API_PREFIX` | String | `/api/v1` | API path prefix |
+| `BACKEND_MODE` | Enum | `supabase_only` | `supabase_only` / `fastapi_preferred` / `fastapi_only` |
+| `REQUEST_TIMEOUT_MS` | int | `15000` | HTTP receive timeout (ms) |
+| `CONNECT_TIMEOUT_MS` | int | `10000` | HTTP connect timeout (ms) |
+| `MAX_RETRIES` | int | `2` | Retry count for transient failures |
+| `FF_COURSE_FINDER_FASTAPI` | bool | `false` | Route Course module to FastAPI |
+| `FF_JOB_FINDER_FASTAPI` | bool | `false` | Route Job module to FastAPI |
+| `FF_SEARCH_FASTAPI` | bool | `false` | Route Search module to FastAPI |
+| `FF_AI_COPILOT` | bool | `false` | Enable AI Copilot features |
+
+### Backend Modes
+
+| Mode | Behavior |
+|------|----------|
+| `supabase_only` | All data from Supabase. FastAPI never called. |
+| `fastapi_preferred` | Try FastAPI first. On failure → fallback to Supabase. |
+| `fastapi_only` | FastAPI only. Errors propagate to UI. No fallback. |
+
+**Feature flag override**: When `FF_<MODULE>_FASTAPI=false`, that module always uses Supabase regardless of `BACKEND_MODE`.
 
 ---
 
-## 3. Backend Mode & Feature Flags
+## 3. FastAPI Endpoint Contracts
 
-### 3.1 Backend Modes
-
-| Mode | Env Value | Behavior |
-|---|---|---|
-| **Supabase Only** | `BACKEND_MODE=supabase_only` | All data from Supabase. FastAPI never called. |
-| **FastAPI Preferred** | `BACKEND_MODE=fastapi_preferred` | Try FastAPI first. On failure → fallback to Supabase. |
-| **FastAPI Only** | `BACKEND_MODE=fastapi_only` | FastAPI only. Errors propagate to UI. No fallback. |
-
-### 3.2 Per-Module Feature Flags
-
-| Flag | Controls | Default |
-|---|---|---|
-| `FF_COURSE_FINDER_FASTAPI` | Course list/search/detail routing | `false` |
-| `FF_JOB_FINDER_FASTAPI` | Job list/search/saved/applied routing | `false` |
-| `FF_SEARCH_FASTAPI` | Unified search routing | `false` |
-| `FF_AI_COPILOT` | AI copilot features (events, recs) | `false` |
-| `FF_WEBSOCKET` | WebSocket connections (placeholder) | `false` |
-
-When any flag is `false`, that module always uses Supabase regardless of `BACKEND_MODE`.
-
----
-
-## 4. HTTP Client Configuration
-
-### 4.1 Base Configuration
-
-```
-Base URL:      ${FASTAPI_BASE_URL}${FASTAPI_API_PREFIX}
-               Default: http://localhost:8000/api/v1
-
-Content-Type:  application/json
-Accept:        application/json
-
-Connect Timeout: 10,000 ms (configurable via CONNECT_TIMEOUT_MS)
-Receive Timeout: 15,000 ms (configurable via REQUEST_TIMEOUT_MS)
-```
-
-### 4.2 Request Headers (sent on every request)
-
-| Header | Value | Source |
-|---|---|---|
-| `Content-Type` | `application/json` | Static |
-| `Accept` | `application/json` | Static |
-| `Authorization` | `Bearer <fastapi_access_token>` | From secure storage (if token exists) |
-| `X-Request-Id` | UUID v4 (e.g. `550e8400-e29b-41d4-a716-446655440000`) | Generated per request |
-
-### 4.3 Interceptor Chain (execution order)
-
-```
-Request flow:  AuthInterceptor → RequestIdInterceptor → LoggingInterceptor → [network]
-Response flow: LoggingInterceptor → [return]
-Error flow:    LoggingInterceptor → RetryInterceptor → [error mapping]
-```
-
-1. **AuthInterceptor** — reads token from `flutter_secure_storage` key `fastapi_access_token`, injects `Authorization: Bearer <token>` if present
-2. **RequestIdInterceptor** — generates UUID v4, adds `X-Request-Id` header
-3. **LoggingInterceptor** — logs request/response/error at debug level
-4. **RetryInterceptor** — retries on transient failures (see below)
-
-### 4.4 Retry Policy
-
-| Condition | Retries? |
-|---|---|
-| Connection timeout | Yes |
-| Receive timeout | Yes |
-| Connection error (DNS, offline) | Yes |
-| HTTP 5xx | Yes |
-| HTTP 4xx | No |
-| Request cancelled | No |
-
-- **Max retries**: 2 (configurable via `MAX_RETRIES`)
-- **Backoff**: `RETRY_DELAY_MS * (attempt + 1)` — e.g. 1000ms, 2000ms
-- Retry count tracked via `requestOptions.extra['_retryCount']`
-
----
-
-## 5. API Contracts — What the Frontend Expects
-
-> **CRITICAL FOR BACKEND DEVELOPER**: These are the exact endpoint paths, query parameters, request bodies, and response shapes the Flutter app will call. If your response deviates, the compat layer will attempt to parse alternate shapes, but matching these contracts avoids fallback.
-
----
-
-### 5.1 Courses API
+### 3.1 Course Endpoints
 
 #### `GET /api/v1/courses/`
 
-List/filter courses with pagination.
+List courses with optional filters and pagination.
 
 **Query Parameters:**
 
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `page` | int | Yes | Page number (1-based) |
-| `page_size` | int | Yes | Items per page (default 20) |
-| `q` | string | No | Search query (title match) |
-| `category` | string | No | Filter by category |
-| `level` | string | No | Filter by level (e.g. "beginner") |
-| `is_free` | bool | No | Filter free courses only |
-| `min_rating` | float | No | Minimum rating filter |
-| `provider` | string | No | Filter by provider/institution |
-| `tags` | string | No | Comma-separated tag list |
+| Parameter | Type | Required | Example |
+|-----------|------|----------|---------|
+| `page` | int | Yes | `1` |
+| `page_size` | int | Yes | `20` |
+| `q` | string | No | `"flutter"` |
+| `category` | string | No | `"Technology"` |
+| `level` | string | No | `"beginner"` |
+| `is_free` | bool | No | `true` |
+| `provider` | string | No | `"Coursera"` |
 
-**Expected Response** (preferred shape):
+**Expected Response** (any of these envelope shapes):
 
 ```json
 {
   "items": [
     {
-      "id": "string | int",
-      "title": "string",
-      "description": "string | null",
-      "provider": "string | null",
-      "image_url": "string | null",
-      "category": "string | null",
-      "duration": "string | null",
-      "level": "string | null",
-      "rating": "float | null",
-      "review_count": "int | null",
-      "price": "float | null",
-      "currency": "string | null",
-      "is_free": "bool",
-      "is_eligible": "bool | null",
-      "tags": ["string"],
-      "url": "string | null",
-      "created_at": "ISO8601 | null",
-      "updated_at": "ISO8601 | null"
+      "id": 1,
+      "title": "Flutter Basics",
+      "description": "Learn Flutter from scratch",
+      "provider": "Coursera",
+      "image_url": "https://...",
+      "category": "Technology",
+      "duration": "8 weeks",
+      "level": "beginner",
+      "rating": 4.5,
+      "review_count": 128,
+      "price": 0.0,
+      "currency": "USD",
+      "is_free": true,
+      "is_eligible": true,
+      "tags": ["flutter", "dart", "mobile"],
+      "url": "https://...",
+      "created_at": "2025-01-15T10:00:00Z"
     }
   ],
   "total": 150,
@@ -238,10 +127,10 @@ List/filter courses with pagination.
 }
 ```
 
-**Alternate field names the parser also accepts:**
+**Accepted alternate field names** (parser handles both):
 
-| Preferred | Also Accepted |
-|---|---|
+| Primary | Alternate |
+|---------|-----------|
 | `id` | `course_id` |
 | `title` | `name` |
 | `provider` | `institution` |
@@ -250,106 +139,55 @@ List/filter courses with pagination.
 | `review_count` | `reviews` |
 | `url` | `link` |
 
-**Alternate envelope shapes the parser handles:**
-
-```json
-{ "results": [...], "total": N, "page": N, "page_size": N }
-{ "data": [...], "total": N }
-```
+**Accepted envelope keys**: `items`, `results`, or `data`
+**Accepted total keys**: `total` or `count`
 
 ---
 
 #### `GET /api/v1/courses/{id}`
 
-Get single course by ID.
+Get a single course by ID.
 
-**Response**: Single course object (same shape as items above, unwrapped).
+**Response**: Single course object (same fields as above, unwrapped).
 
----
-
-#### `GET /api/v1/courses/search`
-
-Search courses by text query.
-
-**Query Parameters:**
-
-| Param | Type | Required |
-|---|---|---|
-| `q` | string | Yes |
-| `page` | int | Yes |
-| `page_size` | int | Yes |
-
-**Response**: Same paginated envelope as `GET /api/v1/courses/`.
-
----
-
-#### `GET /api/v1/courses/eligible`
-
-Get courses the current user is eligible for.
-
-**Query Parameters:**
-
-| Param | Type | Required |
-|---|---|---|
-| `page` | int | Yes |
-| `page_size` | int | Yes |
-
-**Response**: Same paginated envelope.
+**Error**: Return HTTP 404 with `{ "detail": "Course not found" }` if missing.
 
 ---
 
 #### `GET /api/v1/courses/categories`
 
-List all distinct course categories.
+List distinct course categories.
 
-**Response:**
-
-```json
-{
-  "categories": ["Technology", "Business", "Design"]
-}
-```
-
-> **NOTE**: If this endpoint doesn't exist (returns 404), the app falls back to Supabase `SELECT DISTINCT category FROM courses`. Consider implementing it.
-
----
-
-#### `GET /api/v1/courses/levels`
-
-List all distinct course levels.
-
-**Response:**
+**Expected Response:**
 
 ```json
 {
-  "levels": ["Beginner", "Intermediate", "Advanced"]
+  "categories": ["Technology", "Business", "Design", "Science"]
 }
 ```
 
-> **NOTE**: Same 404-fallback behavior as categories.
+**Note**: If this endpoint is not implemented yet, return 404. The frontend catches 404 and raises `NotImplementedException`, which triggers Supabase fallback in `fastapiPreferred` mode.
 
 ---
 
-### 5.2 Jobs API
+### 3.2 Job Endpoints
 
 #### `GET /api/v1/jobs/`
 
-List/filter jobs with pagination.
+List jobs with optional filters and pagination.
 
 **Query Parameters:**
 
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `page` | int | Yes | Page number (1-based) |
-| `page_size` | int | Yes | Items per page |
-| `q` | string | No | Search query (also used for job search) |
-| `category` | string | No | Job category filter |
-| `type` | string | No | "full-time", "part-time", "contract", "internship" |
-| `location` | string | No | Location filter |
-| `is_remote` | bool | No | Remote only |
-| `experience_level` | string | No | e.g. "junior", "senior" |
-| `salary_min` | float | No | Minimum salary |
-| `skills` | string | No | Comma-separated skills |
+| Parameter | Type | Required | Example |
+|-----------|------|----------|---------|
+| `page` | int | Yes | `1` |
+| `page_size` | int | Yes | `20` |
+| `q` | string | No | `"developer"` |
+| `category` | string | No | `"Engineering"` |
+| `type` | string | No | `"full-time"` |
+| `location` | string | No | `"Remote"` |
+| `is_remote` | bool | No | `true` |
+| `experience_level` | string | No | `"senior"` |
 
 **Expected Response:**
 
@@ -357,28 +195,27 @@ List/filter jobs with pagination.
 {
   "items": [
     {
-      "id": "string | int",
-      "title": "string",
-      "company": "string | null",
-      "company_logo": "string | null",
-      "location": "string | null",
-      "is_remote": false,
-      "type": "string | null",
-      "salary": "string | null",
-      "salary_min": "float | null",
-      "salary_max": "float | null",
-      "currency": "string | null",
-      "description": "string | null",
-      "requirements": ["string"],
-      "skills": ["string"],
-      "category": "string | null",
-      "experience_level": "string | null",
-      "posted_at": "ISO8601 | null",
-      "expires_at": "ISO8601 | null",
-      "url": "string | null",
-      "is_saved": "bool",
-      "is_applied": "bool",
-      "application_status": "string | null"
+      "id": 1,
+      "title": "Senior Flutter Developer",
+      "company": "TechCorp",
+      "company_logo": "https://...",
+      "location": "San Francisco, CA",
+      "is_remote": true,
+      "type": "full-time",
+      "salary": "$120k - $180k",
+      "salary_min": 120000.0,
+      "salary_max": 180000.0,
+      "currency": "USD",
+      "description": "We are looking for...",
+      "requirements": ["3+ years Flutter", "State management experience"],
+      "skills": ["flutter", "dart", "bloc"],
+      "category": "Engineering",
+      "experience_level": "senior",
+      "posted_at": "2025-02-01T00:00:00Z",
+      "url": "https://apply.techcorp.com/123",
+      "is_saved": false,
+      "is_applied": false,
+      "application_status": null
     }
   ],
   "total": 85,
@@ -387,60 +224,54 @@ List/filter jobs with pagination.
 }
 ```
 
-**Alternate field names also accepted:**
+**Accepted alternate field names:**
 
-| Preferred | Also Accepted |
-|---|---|
+| Primary | Alternate |
+|---------|-----------|
 | `id` | `job_id` |
 | `title` | `job_title` |
 | `company` | `company_name` |
 | `company_logo` | `logo_url` |
 | `type` | `job_type` |
 | `experience_level` | `level` |
-| `url` | `apply_url` |
 | `posted_at` | `created_at` |
+| `url` | `apply_url` |
 
 ---
 
 #### `GET /api/v1/jobs/{id}`
 
-Get single job by ID.
+Get a single job by ID.
 
-**Response**: Single job object (unwrapped).
+**Response**: Single job object (same fields as above, unwrapped).
 
----
-
-#### `GET /api/v1/jobs/applied`
-
-Get list of jobs the current user has applied to.
-
-**Response** (either shape):
-
-```json
-[{ ...job_object, "is_applied": true, "application_status": "pending" }]
-```
-or
-```json
-{ "items": [...] }
-```
+**Error**: Return HTTP 404 with `{ "detail": "Job not found" }`.
 
 ---
 
 #### `GET /api/v1/saved-items/jobs`
 
-Get user's saved/bookmarked jobs.
+Get the authenticated user's saved/bookmarked jobs.
 
-**Response** (either shape):
+**Response** (accepts both formats):
 
 ```json
-[{ ...job_object }]
-```
-or
-```json
-{ "items": [...] }
+[
+  { "id": 1, "title": "Flutter Dev", "company": "Acme", ... }
+]
 ```
 
-App marks all returned jobs with `isSaved: true`.
+or:
+
+```json
+{
+  "items": [
+    { "id": 1, "title": "Flutter Dev", "company": "Acme", ... }
+  ]
+}
+```
+
+Frontend automatically sets `isSaved: true` on all returned jobs.
 
 ---
 
@@ -452,11 +283,11 @@ Save/bookmark a job.
 
 ```json
 {
-  "job_id": "string"
+  "job_id": "123"
 }
 ```
 
-**Response**: Any (status 2xx).
+**Response**: Any 2xx (body ignored).
 
 ---
 
@@ -464,24 +295,48 @@ Save/bookmark a job.
 
 Remove a saved job.
 
-**Response**: Any (status 2xx).
+**Response**: Any 2xx (body ignored).
 
 ---
 
-### 5.3 Unified Search API
+#### `GET /api/v1/jobs/applied`
+
+Get the authenticated user's applied jobs.
+
+**Response** (accepts both formats):
+
+```json
+[
+  { "id": 1, "title": "Flutter Dev", "company": "Acme", "application_status": "pending", ... }
+]
+```
+
+or:
+
+```json
+{
+  "items": [...]
+}
+```
+
+Frontend automatically sets `isApplied: true` on all returned jobs.
+
+---
+
+### 3.3 Search Endpoint (Planned — behind `FF_SEARCH_FASTAPI`)
 
 #### `GET /api/v1/search/`
 
-Search across all entity types.
+Unified cross-module search.
 
 **Query Parameters:**
 
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `q` | string | Yes | Search query |
-| `page` | int | Yes | Page number |
-| `page_size` | int | Yes | Items per page |
-| `types` | string | No | Comma-separated type filter (e.g. "course,job") |
+| Parameter | Type | Required | Example |
+|-----------|------|----------|---------|
+| `q` | string | Yes | `"flutter"` |
+| `types` | string | No | `"course,job"` (comma-separated) |
+| `page` | int | Yes | `1` |
+| `page_size` | int | Yes | `20` |
 
 **Expected Response:**
 
@@ -489,13 +344,13 @@ Search across all entity types.
 {
   "items": [
     {
-      "id": "string",
-      "type": "course | job | lead",
-      "title": "string",
-      "subtitle": "string | null",
-      "image_url": "string | null",
-      "score": "float | null",
-      "metadata": {}
+      "id": "123",
+      "type": "course",
+      "title": "Flutter Basics",
+      "subtitle": "Learn Flutter from scratch",
+      "image_url": "https://...",
+      "score": 0.95,
+      "metadata": { "provider": "Coursera", "rating": 4.5 }
     }
   ],
   "total": 42,
@@ -504,488 +359,531 @@ Search across all entity types.
 }
 ```
 
-Also accepts `{ "results": [...] }` envelope.
-
 ---
 
-### 5.4 AI Copilot API
-
-> All AI endpoints are behind the `FF_AI_COPILOT` feature flag. When disabled, the app never calls these. When enabled, all calls degrade gracefully on failure (no crash).
+### 3.4 AI Copilot Endpoints (Planned — behind `FF_AI_COPILOT`)
 
 #### `POST /api/v1/ai-copilot/events`
 
-Publish a single user action event.
+Publish a single user behavior event.
 
 **Request Body:**
 
 ```json
 {
-  "event_type": "page_view | course_click | job_apply | search | ...",
-  "payload": {
-    "arbitrary": "data relevant to the event"
-  },
-  "timestamp": "2025-01-15T10:30:00Z"
+  "event_type": "page_view",
+  "payload": { "page": "/courses", "duration_ms": 5000 },
+  "timestamp": "2025-03-01T12:00:00Z"
 }
 ```
 
-**Response**: Any (status 2xx).
+**Event types**: `page_view`, `course_click`, `job_apply`, `search`, `bookmark`, etc.
 
 ---
 
 #### `POST /api/v1/ai-copilot/events/batch`
 
-Publish multiple events at once (used for offline queue flush).
+Publish multiple events at once.
 
 **Request Body:**
 
 ```json
 {
   "events": [
-    {
-      "event_type": "string",
-      "payload": {},
-      "timestamp": "ISO8601"
-    }
+    { "event_type": "page_view", "payload": {...}, "timestamp": "..." },
+    { "event_type": "course_click", "payload": {...}, "timestamp": "..." }
   ]
 }
 ```
-
-**Response**: Any (status 2xx).
 
 ---
 
 #### `GET /api/v1/ai-copilot/recommendations`
 
-Get AI-generated recommendations for the current user.
+Get personalized recommendations.
 
 **Query Parameters:**
 
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `type` | string | No | Filter by recommendation type ("course", "job", "action") |
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `type` | string | No (filter by "course", "job", "action") |
 
-**Expected Response** (any of these):
+**Expected Response:**
 
 ```json
 [
   {
-    "id": "string",
-    "type": "course | job | action",
-    "title": "string",
-    "description": "string | null",
-    "score": "float | null",
-    "reason": "string | null",
-    "action_url": "string | null",
+    "id": "rec-001",
+    "type": "course",
+    "title": "Advanced Flutter",
+    "description": "Based on your recent activity...",
+    "score": 0.92,
+    "reason": "You viewed 3 Flutter courses this week",
+    "action_url": "/courses/detail/42",
     "metadata": {}
   }
 ]
-```
-or
-```json
-{
-  "recommendations": [...],
-  "items": [...],
-  "results": [...]
-}
 ```
 
 ---
 
 #### `GET /api/v1/ai-copilot/context`
 
-Get the AI context for the current user/session.
+Get the user's AI context (lead score, next action, summary).
 
-**Response:**
+**Expected Response:**
 
 ```json
 {
-  "user_id": "string | null",
-  "lead_score": "float | null",
-  "next_action": "string | null",
-  "summary": "string | null",
-  "metadata": {}
+  "user_id": "abc-123",
+  "lead_score": 0.85,
+  "next_action": "Complete your profile to unlock recommendations",
+  "summary": "Active learner focused on mobile development"
 }
 ```
 
 ---
 
-#### `GET /api/v1/ai-copilot/next-action`
+## 4. Pagination Contract
 
-Get the next recommended action for the user.
-
-**Response:**
+All paginated endpoints must follow this contract:
 
 ```json
 {
-  "action": "string | null"
-}
-```
-
----
-
-#### `GET /api/v1/ai-copilot/lead-score`
-
-Get lead score for a specific lead.
-
-**Query Parameters:**
-
-| Param | Type | Required |
-|---|---|---|
-| `lead_id` | string | Yes |
-
-**Response:**
-
-```json
-{
-  "score": 0.85
-}
-```
-
----
-
-#### `POST /api/v1/ai-copilot/email-draft`
-
-Generate an AI email draft.
-
-**Request Body:**
-
-```json
-{
-  "lead_id": "string",
-  "context": "string",
-  "tone": "formal | casual",
-  ...any additional params
-}
-```
-
-**Response:**
-
-```json
-{
-  "subject": "string",
-  "body": "string",
-  "to": "string | null"
-}
-```
-
-> **NOTE**: This is the only AI endpoint that propagates errors to the UI (no silent fallback).
-
----
-
-### 5.5 Auth API (Confirmed but NOT yet wired)
-
-These endpoints are confirmed in the backend but the app currently uses Supabase auth for students. Models are ready for future integration.
-
-| Endpoint | Method | Status |
-|---|---|---|
-| `/api/v1/auth/login` | POST | Model ready (`BackendTokens`), not wired |
-| `/api/v1/auth/refresh` | POST | Model ready, not wired |
-| `/api/v1/auth/logout` | POST | Not wired |
-| `/api/v1/auth/change_password` | POST | Not wired |
-| `/api/v1/auth/otp` | POST | Not wired |
-| `/api/v1/auth/profile` | GET | Model ready (`BackendProfile`), not wired |
-
-**Expected login response** (for when it's wired):
-
-```json
-{
-  "access_token": "string",
-  "refresh_token": "string | null",
-  "expires_in": 3600,
-  "token_type": "Bearer"
-}
-```
-
-**Expected profile response:**
-
-```json
-{
-  "id": "string",
-  "email": "string | null",
-  "name": "string | null",
-  "role": "string | null",
-  "metadata": {}
-}
-```
-
-Also accepts `user_id` for `id` and `full_name` for `name`.
-
----
-
-### 5.6 Leads API (Confirmed but NOT consumed)
-
-| Endpoint | Method | Status |
-|---|---|---|
-| `/api/v1/leads/*` | Various | Confirmed, no frontend consumer yet |
-
----
-
-## 6. Authentication Strategy
-
-### Current State
-
-```
-Student login flow:
-  User → Supabase Auth (email/password, OAuth, OTP)
-       → Supabase session token (managed by supabase_flutter SDK)
-       → Used for all Supabase queries
-
-FastAPI token (separate):
-  Stored in flutter_secure_storage under keys:
-    - 'fastapi_access_token'
-    - 'fastapi_refresh_token'
-  Injected via Authorization: Bearer header by AuthInterceptor
-  If missing → FastAPI calls go without auth → may get 401 → triggers Supabase fallback
-```
-
-### Token Flow
-
-```
-1. App starts → Supabase session restored automatically
-2. If backend auth available → call /api/v1/auth/login → store tokens
-3. Every FastAPI request → AuthInterceptor reads token from secure storage
-4. If token missing/expired → 401 from backend → compat layer falls back to Supabase
-5. Student flows NEVER blocked by backend auth unavailability
-```
-
-### What Backend Developer Needs To Know
-
-- The app sends `Authorization: Bearer <token>` on **every** FastAPI request if a token exists
-- If the token is invalid/expired, return **401** — the app will fallback gracefully
-- The app does NOT currently call `/api/v1/auth/login` — tokens must be provisioned separately or by a future login integration
-- **Never** return 403 for missing auth — use 401 (403 does NOT trigger fallback)
-
----
-
-## 7. Error Handling Contract
-
-### HTTP Status Codes the App Handles
-
-| Status | App Behavior (fastapiPreferred) | App Behavior (fastapiOnly) |
-|---|---|---|
-| 2xx | Parse response, return data | Same |
-| 400 | **Propagate error** (no fallback) | Propagate error |
-| 401 | **Fallback to Supabase** | Propagate error |
-| 403 | **Propagate error** (no fallback) | Propagate error |
-| 404 | **Fallback to Supabase** | Propagate error |
-| 5xx | **Fallback to Supabase** (after retries) | Propagate error (after retries) |
-
-### Expected Error Response Shape
-
-```json
-{
-  "detail": "Human-readable error message",
-  "error_code": "OPTIONAL_ERROR_CODE"
-}
-```
-
-Also accepts `"message"` instead of `"detail"`.
-
-### Timeout & Retry Behavior
-
-```
-Request timeout: 15 seconds
-Connect timeout: 10 seconds
-Retries: 2 attempts on 5xx/timeout
-Backoff: 1s, 2s (linear with attempt multiplier)
-```
-
----
-
-## 8. Pagination Contract
-
-### Standard Envelope (preferred)
-
-```json
-{
-  "items": [...],
+  "<array_key>": [ ... ],
   "total": 150,
   "page": 1,
   "page_size": 20
 }
 ```
 
-### Also Accepted
+**Rules:**
+- Pages are **1-based** (first page = `page=1`)
+- `total` is the **total count across all pages**, not just the current page
+- `<array_key>` can be `items`, `results`, or `data`
+- `total` can alternatively be `count`
+- Frontend computes `hasMore = (page * page_size) < total`
 
-```json
-{ "results": [...], "total": N, "page": N, "page_size": N }
-{ "results": [...], "count": N }
-{ "data": [...], "total": N }
+---
+
+## 5. Authentication Strategy
+
+### Token Flow
+
+```
+┌──────────┐    POST /auth/login     ┌──────────────┐
+│  Flutter  │ ──────────────────────▶ │   FastAPI     │
+│   App     │ ◀────────────────────── │   Server      │
+│           │   { access_token,       │               │
+│           │     refresh_token }     │               │
+└──────────┘                         └──────────────┘
+     │
+     │ Stored in FlutterSecureStorage
+     │ Key: fastapi_access_token
+     │ Key: fastapi_refresh_token
+     │
+     ▼
+  Every subsequent request:
+  Authorization: Bearer <access_token>
 ```
 
-### Frontend Pagination Logic
+### Required Headers
 
-- `page` is 1-based
-- `hasMore = (page * pageSize) < total`
-- `totalPages = ceil(total / pageSize)`
-- The app will request `page=1&page_size=20`, then `page=2&page_size=20`, etc.
+| Header | Value | Description |
+|--------|-------|-------------|
+| `Authorization` | `Bearer <token>` | JWT access token (auto-injected by AuthInterceptor) |
+| `X-Request-Id` | UUID v4 | Correlation ID (auto-injected by RequestIdInterceptor) |
+| `Content-Type` | `application/json` | All requests |
+| `Accept` | `application/json` | All requests |
+
+### Token Storage Keys
+
+| Key | Description |
+|-----|-------------|
+| `fastapi_access_token` | Bearer token for API calls |
+| `fastapi_refresh_token` | Refresh token (stored but not yet used for auto-refresh) |
+
+**Note**: Auth endpoints (`/auth/login`, `/auth/register`, `/auth/refresh`) are **not yet implemented** in the frontend. The token storage and auth interceptor infrastructure is ready. Backend should provide JWT tokens compatible with this flow.
 
 ---
 
-## 9. Supabase Tables Referenced (for backend developer awareness)
+## 6. HTTP Client Configuration
 
-If the backend needs to replicate or replace Supabase behavior, these are the table schemas the app expects:
+### Interceptor Chain (executed in order)
 
-### `courses`
+| # | Interceptor | Purpose |
+|---|-------------|---------|
+| 1 | `AuthInterceptor` | Injects `Authorization: Bearer <token>` from secure storage |
+| 2 | `RequestIdInterceptor` | Injects `X-Request-Id: <UUID v4>` for correlation |
+| 3 | `LoggingInterceptor` | Logs `→ GET /api/v1/courses/` and `← 200 /api/v1/courses/` |
+| 4 | `RetryInterceptor` | Retries transient failures with linear backoff |
+
+### Retry Policy
+
+| Condition | Retried? |
+|-----------|----------|
+| Connection timeout | Yes |
+| Receive timeout | Yes |
+| Connection error (DNS, offline) | Yes |
+| HTTP 5xx | Yes |
+| HTTP 4xx | No |
+| Request cancelled | No |
+
+**Max retries**: 2 (configurable via `MAX_RETRIES`)
+**Backoff**: Linear — 1s for attempt 1, 2s for attempt 2
+
+### Error Mapping (DioException → AppException)
+
+| Dio Error Type | Mapped To |
+|----------------|-----------|
+| `connectionTimeout` | `NetworkException` |
+| `sendTimeout` | `NetworkException` |
+| `receiveTimeout` | `NetworkException` |
+| `connectionError` | `NetworkException` |
+| `badResponse` | `ApiException(statusCode, detail)` |
+| `cancel` | `NetworkException("Request cancelled")` |
+| `badCertificate` | `NetworkException("Bad certificate")` |
+| `unknown` | `NetworkException` |
+
+Error body parsing: expects `{ "detail": "..." }` or `{ "message": "..." }`.
+
+---
+
+## 7. Error Hierarchy & Fallback Conditions
+
+### Exception Types
+
+```dart
+sealed class AppException implements Exception
+├── ApiException          // HTTP errors (status + detail)
+│   ├── isUnauthorized   // statusCode == 401
+│   ├── isNotFound       // statusCode == 404
+│   └── isServerError    // statusCode >= 500
+├── NetworkException      // Connectivity / timeout
+├── SupabaseException     // Supabase SDK errors
+├── ParseException        // JSON parsing failures
+└── NotImplementedException // Feature not available
+```
+
+### Fallback Decision Matrix (fastapiPreferred mode only)
+
+| Exception | Fallback to Supabase? |
+|-----------|----------------------|
+| `NetworkException` | **Yes** |
+| `ApiException` 401 | **Yes** |
+| `ApiException` 404 | **Yes** |
+| `ApiException` 5xx | **Yes** |
+| `NotImplementedException` | **Yes** |
+| `ParseException` | **Yes** |
+| `ApiException` 400 | **No** — propagated to UI |
+| `ApiException` 403 | **No** — propagated to UI |
+| Any other 4xx | **No** — propagated to UI |
+
+**In `fastapiOnly` mode**: No fallback — all errors propagate to UI.
+**In `supabaseOnly` mode**: FastAPI is never called.
+
+---
+
+## 8. Supabase Table Schema (current Supabase fallback)
+
+### `courses` Table
 
 | Column | Type | Notes |
-|---|---|---|
-| `id` | uuid/int | Primary key |
-| `title` | text | Required |
+|--------|------|-------|
+| `id` | UUID/int | Primary key |
+| `title` | text | Course title |
 | `description` | text | Nullable |
-| `provider` | text | Nullable |
+| `provider` | text | e.g., "Coursera" |
 | `image_url` | text | Nullable |
-| `category` | text | Filterable |
-| `duration` | text | Nullable |
-| `level` | text | Filterable |
-| `rating` | float | Nullable |
+| `category` | text | e.g., "Technology" |
+| `duration` | text | e.g., "8 weeks" |
+| `level` | text | e.g., "beginner" |
+| `rating` | numeric | Nullable |
 | `review_count` | int | Nullable |
-| `price` | float | Nullable |
-| `currency` | text | Nullable |
-| `is_free` | bool | Default false |
-| `is_eligible` | bool | Nullable |
-| `tags` | text[] | Array |
-| `url` | text | Nullable |
-| `created_at` | timestamptz | Auto |
-| `updated_at` | timestamptz | Auto |
+| `price` | numeric | 0 = free |
+| `is_free` | bool | Nullable |
+| `tags` | json/text[] | Array of strings |
+| `url` | text | Course URL |
+| `created_at` | timestamptz | Auto-set |
 
-### `jobs`
+**Queries used**: `ilike('title', '%q%')`, `eq('category')`, `eq('level')`, `eq('is_free', true)`, `range(from, to)`
+
+### `jobs` Table
 
 | Column | Type | Notes |
-|---|---|---|
-| `id` | uuid/int | Primary key |
-| `title` | text | Required |
-| `company` | text | Nullable |
-| `company_logo` | text | URL |
-| `location` | text | Filterable (ilike) |
+|--------|------|-------|
+| `id` | UUID/int | Primary key |
+| `title` | text | Job title |
+| `company` | text | Company name |
+| `company_logo` | text | Logo URL |
+| `location` | text | e.g., "San Francisco, CA" |
 | `is_remote` | bool | Default false |
-| `type` | text | "full-time" etc |
+| `type` | text | "full-time", "part-time", "contract" |
 | `salary` | text | Display string |
-| `salary_min` | float | Nullable |
-| `salary_max` | float | Nullable |
-| `currency` | text | Nullable |
-| `description` | text | Nullable |
-| `requirements` | text[] | Array |
-| `skills` | text[] | Array |
-| `category` | text | Filterable |
-| `experience_level` | text | Filterable |
-| `posted_at` | timestamptz | Nullable |
-| `expires_at` | timestamptz | Nullable |
-| `url` | text | Apply URL |
+| `salary_min` | numeric | Nullable |
+| `salary_max` | numeric | Nullable |
+| `description` | text | Full description |
+| `requirements` | json/text[] | Array of strings |
+| `skills` | json/text[] | Array of strings |
+| `category` | text | e.g., "Engineering" |
+| `experience_level` | text | "junior", "mid", "senior" |
+| `posted_at` | timestamptz | When posted |
 
-### `saved_jobs`
+**Queries used**: `ilike('title', '%q%')`, `eq('category')`, `eq('type')`, `eq('is_remote', true)`, `range(from, to)`
 
-| Column | Type | Notes |
-|---|---|---|
-| `user_id` | uuid | FK → auth.users |
-| `job_id` | uuid/int | FK → jobs |
-
-### `job_applications`
+### `saved_jobs` Table (junction)
 
 | Column | Type | Notes |
-|---|---|---|
-| `user_id` | uuid | FK → auth.users |
-| `job_id` | uuid/int | FK → jobs |
-| `status` | text | "pending", "accepted", etc. |
+|--------|------|-------|
+| `user_id` | UUID | FK → auth.users |
+| `job_id` | UUID/int | FK → jobs.id |
+
+**Queries**: `select('job_id, jobs(*)').eq('user_id', userId)`, `insert(...)`, `delete().eq(...).eq(...)`
+
+### `job_applications` Table
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `user_id` | UUID | FK → auth.users |
+| `job_id` | UUID/int | FK → jobs.id |
+| `status` | text | "pending", "accepted", "rejected" |
+
+**Queries**: `select('status, jobs(*)').eq('user_id', userId)`
 
 ---
 
-## 10. Offline / Degraded Mode Behavior
+## 9. Navigation & Screen Map
 
-### AI Copilot Offline Queue
+### Route Table
 
-When `POST /api/v1/ai-copilot/events` or `events/batch` fails:
-1. Events are stored in an in-memory queue (`Queue<CopilotEvent>`)
-2. On the next successful event publish, queued events are batch-flushed first
-3. If flush fails, events remain in queue for next attempt
-4. Queue is lost on app restart (no persistence — acceptable for analytics events)
+| Route | Screen | Tab | BLoC |
+|-------|--------|-----|------|
+| `/splash` | SplashPage | — | — |
+| `/onboarding` | OnboardingPage | — | — |
+| `/login` | LoginPage | — | — |
+| `/home` | HomePage | Tab 0 (Home) | — |
+| `/courses` | CourseListPage | Tab 1 (Courses) | CourseListBloc |
+| `/courses/detail/:courseId` | CourseDetailPage | — (full screen) | CourseDetailBloc |
+| `/jobs` | JobListPage | Tab 2 (Jobs) | JobListBloc |
+| `/jobs/detail/:jobId` | JobDetailPage | — (full screen) | JobDetailBloc |
+| `/jobs/saved` | SavedJobsPage | — | — |
+| `/jobs/applied` | AppliedJobsPage | — | — |
+| `/ai-copilot` | AiCopilotPage | Tab 3 (AI) | — |
+| `/profile` | ProfilePage | Tab 4 (Profile) | — |
+| `/profile/settings` | SettingsPage | — | — |
+| `/notifications` | NotificationsPage | — (full screen) | — |
 
-### Connectivity Loss
+### 5-Tab Bottom Navigation
 
-| Module | Behavior |
-|---|---|
-| Courses | Falls back to Supabase (in fastapiPreferred) |
-| Jobs | Falls back to Supabase (in fastapiPreferred) |
-| Search | Falls back to Supabase (in fastapiPreferred) |
-| AI Copilot | Returns empty data, queues events |
-
----
-
-## 11. Request Correlation
-
-Every request includes `X-Request-Id: <UUID v4>` header. This ID is:
-- Logged on the client side
-- Available in error responses for debugging
-- Included in all `AppException` objects
-
-**Backend recommendation**: Log this header server-side for request tracing across frontend ↔ backend.
-
----
-
-## 12. What the Backend Must NOT Do
-
-1. **Do NOT return 403 for missing/expired tokens** — return 401 (only 401 triggers fallback)
-2. **Do NOT use non-JSON response bodies** — the client expects `application/json` always
-3. **Do NOT paginate with 0-based pages** — the app sends `page=1` for the first page
-4. **Do NOT omit `total` from paginated responses** — the app needs it for "load more" logic
-5. **Do NOT require request body for GET endpoints** — use query parameters
-6. **Do NOT block on missing `Authorization` header** for public endpoints — return data for anonymous users (guest mode)
+| Index | Label | Icon | Route |
+|-------|-------|------|-------|
+| 0 | Home | `nav/home.svg` | `/home` |
+| 1 | Courses | `nav/courses.svg` | `/courses` |
+| 2 | Jobs | `nav/jobs.svg` | `/jobs` |
+| 3 | AI | `nav/ai.svg` | `/ai-copilot` |
+| 4 | Profile | `nav/profile.svg` | `/profile` |
 
 ---
 
-## 13. Recommended Backend Implementation Priorities
+## 10. BLoC → API Call Mapping
 
-Based on what the frontend actively consumes:
+### CourseListBloc
 
-### P0 — Required for launch
+| Event | API Call | Parameters |
+|-------|----------|------------|
+| `CourseListFetched(filter)` | `getCourses(CourseFilter)` | query, category, level, isFree, provider, page, pageSize |
+| `CourseListLoadMore` | `getCourses(CourseFilter)` | Same filter, page + 1 |
+| `CourseListRefreshed` | `getCourses(CourseFilter)` | Same filter, page = 1 |
 
-| Endpoint | Reason |
-|---|---|
-| `GET /api/v1/courses/` | Course finder screen |
-| `GET /api/v1/courses/{id}` | Course detail screen |
-| `GET /api/v1/jobs/` | Job finder screen |
-| `GET /api/v1/jobs/{id}` | Job detail screen |
-| `GET /api/v1/saved-items/jobs` | Saved jobs list |
-| `POST /api/v1/saved-items/jobs` | Save job action |
-| `DELETE /api/v1/saved-items/jobs/{id}` | Unsave job action |
+**State**: `CourseListStatus { initial, loading, loaded, loadingMore, error }` + courses list + hasMore + total
 
-### P1 — Important
+### CourseDetailBloc
 
-| Endpoint | Reason |
-|---|---|
-| `GET /api/v1/courses/search` | Course search |
-| `GET /api/v1/courses/eligible` | Personalized courses |
-| `GET /api/v1/jobs/applied` | Application tracking |
-| `GET /api/v1/search/` | Unified search |
+| Event | API Call | Parameters |
+|-------|----------|------------|
+| `CourseDetailFetched(courseId)` | `getCourseById(id)` | Course ID |
 
-### P2 — AI Features (behind flag)
+**State**: `CourseDetailStatus { initial, loading, loaded, error }` + course
 
-| Endpoint | Reason |
-|---|---|
-| `POST /api/v1/ai-copilot/events` | User analytics |
-| `POST /api/v1/ai-copilot/events/batch` | Batch analytics |
-| `GET /api/v1/ai-copilot/recommendations` | AI recommendations |
-| `GET /api/v1/ai-copilot/context` | User context |
-| `GET /api/v1/ai-copilot/next-action` | Next best action |
-| `GET /api/v1/ai-copilot/lead-score` | Lead scoring |
-| `POST /api/v1/ai-copilot/email-draft` | Email generation |
+### JobListBloc
 
-### P3 — Future
+| Event | API Call | Parameters |
+|-------|----------|------------|
+| `JobListFetched(filter)` | `getJobs(JobFilter)` | query, category, type, location, isRemote, experienceLevel, page, pageSize |
+| `JobListLoadMore` | `getJobs(JobFilter)` | Same filter, page + 1 |
 
-| Endpoint | Reason |
-|---|---|
-| `GET /api/v1/courses/categories` | Filter dropdown |
-| `GET /api/v1/courses/levels` | Filter dropdown |
-| Auth endpoints | Replace Supabase auth |
-| WebSocket `/ws` | Real-time updates |
+**State**: `JobListStatus { initial, loading, loaded, loadingMore, error }` + jobs list + hasMore + total
+
+### JobDetailBloc
+
+| Event | API Call | Parameters |
+|-------|----------|------------|
+| `JobDetailFetched(jobId)` | `getJobById(id)` | Job ID |
+| `JobSaveToggled(jobId, isSaved)` | `saveJob(id)` or `unsaveJob(id)` | Job ID |
+
+**State**: `JobDetailStatus { initial, loading, loaded, error }` + job
 
 ---
 
-## 14. Test Coverage Summary
+## 11. Dependency Injection Graph
 
-| Test Suite | Tests | Covers |
-|---|---|---|
-| `course_repository_compat_test.dart` | 12 | All 3 modes, 5 error types, model parsing |
-| `job_repository_compat_test.dart` | 11 | All 3 modes, fallback, model parsing, copyWith |
-| `widget_test.dart` | 1 | App renders |
-| **Total** | **23** | **All pass** |
+```
+GetIt (sl)
+├── TokenStorage (lazy singleton)
+├── FastApiClient (lazy singleton) ← depends on TokenStorage
+├── SupabaseCourseRepository (lazy singleton)
+├── SupabaseJobRepository (lazy singleton)
+├── FastApiCourseRepository (lazy singleton) ← depends on FastApiClient
+├── FastApiJobRepository (lazy singleton) ← depends on FastApiClient
+├── CourseRepository = CourseRepositoryCompat (lazy singleton)
+│   ├── fastApi: FastApiCourseRepository
+│   └── supabase: SupabaseCourseRepository
+├── JobRepository = JobRepositoryCompat (lazy singleton)
+│   ├── fastApi: FastApiJobRepository
+│   └── supabase: SupabaseJobRepository
+├── CourseListBloc (factory — new per screen)
+├── CourseDetailBloc (factory — new per screen)
+├── JobListBloc (factory — new per screen)
+└── JobDetailBloc (factory — new per screen)
+```
+
+---
+
+## 12. Dependencies (pubspec.yaml)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `flutter_bloc` | ^8.1.6 | State management |
+| `equatable` | ^2.0.7 | Value equality for events/states |
+| `go_router` | ^14.2.0 | Declarative navigation |
+| `get_it` | ^7.7.0 | Dependency injection |
+| `dio` | ^5.7.0 | HTTP client |
+| `supabase_flutter` | ^2.8.0 | Supabase SDK |
+| `flutter_secure_storage` | ^9.2.3 | Encrypted token storage |
+| `flutter_dotenv` | ^5.2.1 | .env loading |
+| `cached_network_image` | ^3.4.1 | Image caching |
+| `shimmer` | ^3.0.0 | Loading skeletons |
+| `flutter_svg` | ^2.0.17 | SVG rendering |
+| `lottie` | ^3.3.1 | Lottie animations |
+| `logger` | ^2.5.0 | Structured logging |
+| `uuid` | ^4.5.1 | Request correlation IDs |
+| `json_annotation` | ^4.9.0 | JSON serialization |
+| `bloc_test` | ^9.1.7 | BLoC testing |
+| `mocktail` | ^1.0.4 | Mocking |
+
+---
+
+## 13. Implementation Checklist for Backend
+
+### Phase 1 — MVP (required for app to function)
+
+- [ ] `GET /api/v1/courses/` — paginated, filterable
+- [ ] `GET /api/v1/courses/{id}` — single course
+- [ ] `GET /api/v1/jobs/` — paginated, filterable
+- [ ] `GET /api/v1/jobs/{id}` — single job
+- [ ] `GET /api/v1/saved-items/jobs` — user's saved jobs (auth required)
+- [ ] `POST /api/v1/saved-items/jobs` — save a job (body: `{"job_id": "..."}`)
+- [ ] `DELETE /api/v1/saved-items/jobs/{jobId}` — unsave a job
+
+### Phase 2 — Enhanced
+
+- [ ] `GET /api/v1/jobs/applied` — user's applied jobs
+- [ ] `GET /api/v1/courses/categories` — distinct categories
+- [ ] Auth endpoints: `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`
+
+### Phase 3 — Search (behind `FF_SEARCH_FASTAPI`)
+
+- [ ] `GET /api/v1/search/` — unified cross-module search
+
+### Phase 4 — AI Copilot (behind `FF_AI_COPILOT`)
+
+- [ ] `POST /api/v1/ai-copilot/events` — single event
+- [ ] `POST /api/v1/ai-copilot/events/batch` — batch events
+- [ ] `GET /api/v1/ai-copilot/recommendations` — personalized recommendations
+- [ ] `GET /api/v1/ai-copilot/context` — user context / lead score
+
+---
+
+## 14. Critical Backend Requirements
+
+1. **Return 401 for expired/missing tokens** — NOT 403. Only 401 triggers fallback in `fastapiPreferred` mode.
+2. **Use 1-based pagination** — `page=1` is the first page.
+3. **Always include `total` count** — the app needs it for "load more" and `hasMore` computation.
+4. **Accept query parameters for GET endpoints** — not request bodies.
+5. **Return errors in `{ "detail": "..." }` format** — the Dio error mapper extracts `detail` or `message`.
+6. **Log `X-Request-Id` header** — UUID v4 sent on every request for tracing.
+7. **Support CORS** — the app may hit the API from web builds.
+8. **Return `application/json`** — for all responses including errors.
+9. **Use snake_case** for all JSON field names — `created_at`, `page_size`, `is_remote`, etc.
+
+---
+
+## 15. Test Coverage
+
+| Suite | Tests | Status |
+|-------|-------|--------|
+| CourseRepositoryCompat | 3 (routing + model parsing) | Passing |
+| JobRepositoryCompat | 3 (routing + model parsing) | Passing |
+| Course.fromJson | 3 (standard, alternate, empty) | Passing |
+| Job.fromJson | 3 (standard, alternate, copyWith) | Passing |
+| Widget test | 1 (app renders) | Passing |
+| **Total** | **13** | **All passing** |
+
+`flutter analyze`: **0 issues**
+
+---
+
+## 16. File Structure
+
+```
+lib/
+├── main.dart                           # App entry point
+├── core/
+│   ├── config/app_config.dart          # Env vars, feature flags, backend mode
+│   ├── constants/                      # AppImages, AppIcons, AppAnimations, AppStrings
+│   ├── di/injection.dart               # GetIt registration
+│   ├── error/
+│   │   ├── app_exception.dart          # Sealed exception hierarchy
+│   │   └── fallback_helper.dart        # shouldFallback() logic
+│   ├── network/fastapi_client.dart     # Dio + 4 interceptors
+│   ├── router/
+│   │   ├── route_names.dart            # All route path constants
+│   │   └── app_router.dart             # GoRouter config
+│   ├── storage/token_storage.dart      # FlutterSecureStorage wrapper
+│   └── theme/                          # AppColors, AppTypography, AppSpacing, AppTheme
+├── blocs/
+│   ├── course/
+│   │   ├── course_list_bloc.dart       # List + pagination + filter
+│   │   └── course_detail_bloc.dart     # Single course fetch
+│   └── job/
+│       ├── job_list_bloc.dart          # List + pagination + filter
+│       └── job_detail_bloc.dart        # Single job + save toggle
+├── models/
+│   ├── course/course.dart              # Course + CourseFilter
+│   ├── job/job.dart                    # Job + JobFilter + copyWith
+│   ├── search/search_result.dart       # SearchResult + SearchQuery
+│   ├── ai_copilot/ai_copilot.dart      # CopilotEvent, Recommendation, CopilotContext
+│   └── common/paginated_response.dart  # Generic PaginatedResponse<T>
+├── repositories/
+│   ├── interfaces/                     # Abstract contracts
+│   ├── supabase/                       # Supabase implementations
+│   ├── fastapi/                        # FastAPI implementations
+│   └── compat/                         # Fallback adapters
+├── features/                           # Feature-based page organization
+│   ├── home/
+│   ├── courses/
+│   ├── jobs/
+│   ├── ai_copilot/
+│   ├── profile/
+│   ├── auth/
+│   ├── splash/
+│   ├── onboarding/
+│   ├── notifications/
+│   ├── settings/
+│   └── shell/                          # MainShellPage (bottom nav)
+└── shared/widgets/                     # AppCard, AppShimmer, EmptyState, ErrorView
+```
+
+---
+
+*Generated: March 2, 2026 — Agentic Frontend v2 (BLoC + GetIt + GoRouter architecture)*
