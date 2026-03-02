@@ -1,20 +1,17 @@
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:agenticfrontend/config/backend_mode.dart';
-import 'package:agenticfrontend/core/error/app_exception.dart';
 import 'package:agenticfrontend/models/common/paginated_response.dart';
 import 'package:agenticfrontend/models/job/job.dart';
+import 'package:agenticfrontend/repositories/interfaces/job_repository.dart';
 import 'package:agenticfrontend/repositories/compat/job_repository_compat.dart';
-import 'package:agenticfrontend/repositories/job_repository.dart';
 
 // ── Fake implementations ────────────────────────────────────────────────────
 
 class _FakeJobRepo implements JobRepository {
-  _FakeJobRepo({this.jobs, this.error});
+  _FakeJobRepo({this.jobs});
 
   final List<Job>? jobs;
-  final AppException? error;
   int callCount = 0;
 
   PaginatedResponse<Job> _paginated() => PaginatedResponse<Job>(
@@ -27,48 +24,41 @@ class _FakeJobRepo implements JobRepository {
   @override
   Future<PaginatedResponse<Job>> getJobs(JobFilter filter) async {
     callCount++;
-    if (error != null) throw error!;
+
     return _paginated();
   }
 
   @override
   Future<Job> getJobById(String id) async {
     callCount++;
-    if (error != null) throw error!;
-    return jobs!.first;
-  }
 
-  @override
-  Future<PaginatedResponse<Job>> searchJobs(String query, {int page = 1, int pageSize = 20}) async {
-    callCount++;
-    if (error != null) throw error!;
-    return _paginated();
+    return jobs!.first;
   }
 
   @override
   Future<List<Job>> getSavedJobs() async {
     callCount++;
-    if (error != null) throw error!;
+
     return jobs ?? [];
   }
 
   @override
   Future<List<Job>> getAppliedJobs() async {
     callCount++;
-    if (error != null) throw error!;
+
     return jobs ?? [];
   }
 
   @override
   Future<void> saveJob(String jobId) async {
     callCount++;
-    if (error != null) throw error!;
+
   }
 
   @override
   Future<void> unsaveJob(String jobId) async {
     callCount++;
-    if (error != null) throw error!;
+
   }
 }
 
@@ -79,21 +69,16 @@ final _testJobs = [
 
 void main() {
   setUpAll(() {
-    dotenv.testLoad(fileInput: '''
-FF_JOB_FINDER_FASTAPI=true
-''');
+    // Default: no feature flag → supabaseOnly mode
+    dotenv.testLoad(fileInput: '');
   });
 
-  group('JobRepositoryCompat', () {
-    test('supabaseOnly mode skips FastAPI', () async {
+  group('JobRepositoryCompat – supabaseOnly (default)', () {
+    test('skips FastAPI', () async {
       final fastApi = _FakeJobRepo(jobs: _testJobs);
       final supabase = _FakeJobRepo(jobs: _testJobs);
 
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.supabaseOnly,
-      );
+      final compat = JobRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
       final result = await compat.getJobs(const JobFilter());
       expect(result.items.length, 2);
@@ -101,101 +86,25 @@ FF_JOB_FINDER_FASTAPI=true
       expect(supabase.callCount, 1);
     });
 
-    test('fastapiPreferred uses FastAPI on success', () async {
+    test('saveJob routes to supabase', () async {
       final fastApi = _FakeJobRepo(jobs: _testJobs);
       final supabase = _FakeJobRepo(jobs: _testJobs);
 
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
+      final compat = JobRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
-      final result = await compat.getJobs(const JobFilter());
-      expect(result.items.length, 2);
-      expect(fastApi.callCount, 1);
-      expect(supabase.callCount, 0);
-    });
-
-    test('fastapiPreferred falls back on NetworkException', () async {
-      final fastApi = _FakeJobRepo(error: const NetworkException('timeout'));
-      final supabase = _FakeJobRepo(jobs: _testJobs);
-
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getJobs(const JobFilter());
-      expect(result.items.length, 2);
-      expect(fastApi.callCount, 1);
+      await compat.saveJob('1');
+      expect(fastApi.callCount, 0);
       expect(supabase.callCount, 1);
     });
 
-    test('fastapiPreferred falls back on 500', () async {
-      final fastApi = _FakeJobRepo(
-        error: const ApiException('Server error', statusCode: 500),
-      );
-      final supabase = _FakeJobRepo(jobs: _testJobs);
-
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getJobs(const JobFilter());
-      expect(result.items.length, 2);
-    });
-
-    test('fastapiOnly propagates errors', () async {
-      final fastApi = _FakeJobRepo(
-        error: const NetworkException('offline'),
-      );
-      final supabase = _FakeJobRepo(jobs: _testJobs);
-
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiOnly,
-      );
-
-      expect(
-        () => compat.getJobs(const JobFilter()),
-        throwsA(isA<NetworkException>()),
-      );
-    });
-
-    test('saveJob routes through compat layer', () async {
+    test('unsaveJob routes to supabase', () async {
       final fastApi = _FakeJobRepo(jobs: _testJobs);
       final supabase = _FakeJobRepo(jobs: _testJobs);
 
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
+      final compat = JobRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
-      await compat.saveJob('1');
-      expect(fastApi.callCount, 1);
-      expect(supabase.callCount, 0);
-    });
-
-    test('saveJob falls back on failure', () async {
-      final fastApi = _FakeJobRepo(
-        error: const ApiException('Unauthorized', statusCode: 401),
-      );
-      final supabase = _FakeJobRepo(jobs: _testJobs);
-
-      final compat = JobRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      await compat.saveJob('1');
-      expect(fastApi.callCount, 1);
+      await compat.unsaveJob('1');
+      expect(fastApi.callCount, 0);
       expect(supabase.callCount, 1);
     });
   });

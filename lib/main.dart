@@ -1,27 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'config/env_config.dart';
+import 'core/config/app_config.dart';
+import 'core/di/injection.dart';
+import 'core/router/app_router.dart';
+import 'core/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Load environment variables from .env file.
   await dotenv.load(fileName: '.env');
 
-  // Initialize Supabase (existing auth/data path).
-  await Supabase.initialize(
-    url: EnvConfig.supabaseUrl,
-    anonKey: EnvConfig.supabaseAnonKey,
-  );
+  if (_requiresSupabase()) {
+    await Supabase.initialize(
+      url: AppConfig.supabaseUrl,
+      anonKey: AppConfig.supabaseAnonKey,
+    );
+  }
 
-  runApp(
-    const ProviderScope(
-      child: AgenticApp(),
-    ),
-  );
+  await initDependencies();
+  runApp(const AgenticApp());
+}
+
+bool _requiresSupabase() {
+  final mode = AppConfig.backendMode;
+  if (mode != BackendMode.fastapiOnly) return true;
+  return !AppConfig.courseFinderFastApi ||
+      !AppConfig.jobFinderFastApi ||
+      !AppConfig.searchFastApi;
 }
 
 class AgenticApp extends StatelessWidget {
@@ -29,31 +35,12 @@ class AgenticApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Agentic Frontend',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
-    );
-  }
-}
-
-/// Placeholder home page — existing screens plug in here.
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Agentic Frontend'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: const Center(
-        child: Text('Compatibility layer ready.\nExisting screens plug in here.'),
-      ),
+    return MaterialApp.router(
+      title: 'Agentic',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      routerConfig: AppRouter.router,
     );
   }
 }

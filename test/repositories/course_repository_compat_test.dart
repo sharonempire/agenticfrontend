@@ -1,20 +1,17 @@
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:agenticfrontend/config/backend_mode.dart';
-import 'package:agenticfrontend/core/error/app_exception.dart';
 import 'package:agenticfrontend/models/common/paginated_response.dart';
 import 'package:agenticfrontend/models/course/course.dart';
+import 'package:agenticfrontend/repositories/interfaces/course_repository.dart';
 import 'package:agenticfrontend/repositories/compat/course_repository_compat.dart';
-import 'package:agenticfrontend/repositories/course_repository.dart';
 
 // ── Fake implementations ────────────────────────────────────────────────────
 
 class _FakeCourseRepo implements CourseRepository {
-  _FakeCourseRepo({this.courses, this.error});
+  _FakeCourseRepo({this.courses});
 
   final List<Course>? courses;
-  final AppException? error;
   int callCount = 0;
 
   PaginatedResponse<Course> _paginated() => PaginatedResponse<Course>(
@@ -27,43 +24,22 @@ class _FakeCourseRepo implements CourseRepository {
   @override
   Future<PaginatedResponse<Course>> getCourses(CourseFilter filter) async {
     callCount++;
-    if (error != null) throw error!;
+
     return _paginated();
   }
 
   @override
   Future<Course> getCourseById(String id) async {
     callCount++;
-    if (error != null) throw error!;
+
     return courses!.first;
-  }
-
-  @override
-  Future<PaginatedResponse<Course>> searchCourses(String query, {int page = 1, int pageSize = 20}) async {
-    callCount++;
-    if (error != null) throw error!;
-    return _paginated();
-  }
-
-  @override
-  Future<PaginatedResponse<Course>> getEligibleCourses({int page = 1, int pageSize = 20}) async {
-    callCount++;
-    if (error != null) throw error!;
-    return _paginated();
   }
 
   @override
   Future<List<String>> getCategories() async {
     callCount++;
-    if (error != null) throw error!;
-    return ['Tech', 'Business'];
-  }
 
-  @override
-  Future<List<String>> getLevels() async {
-    callCount++;
-    if (error != null) throw error!;
-    return ['Beginner', 'Advanced'];
+    return ['Tech', 'Business'];
   }
 }
 
@@ -74,22 +50,16 @@ final _testCourses = [
 
 void main() {
   setUpAll(() {
-    // Load env with feature flags enabled for testing.
-    dotenv.testLoad(fileInput: '''
-FF_COURSE_FINDER_FASTAPI=true
-''');
+    // Default: no feature flag → supabaseOnly mode
+    dotenv.testLoad(fileInput: '');
   });
 
-  group('CourseRepositoryCompat', () {
-    test('supabaseOnly mode skips FastAPI entirely', () async {
+  group('CourseRepositoryCompat – supabaseOnly (default)', () {
+    test('skips FastAPI entirely', () async {
       final fastApi = _FakeCourseRepo(courses: _testCourses);
       final supabase = _FakeCourseRepo(courses: _testCourses);
 
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.supabaseOnly,
-      );
+      final compat = CourseRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
       final result = await compat.getCourses(const CourseFilter());
       expect(result.items.length, 2);
@@ -97,136 +67,28 @@ FF_COURSE_FINDER_FASTAPI=true
       expect(supabase.callCount, 1);
     });
 
-    test('fastapiPreferred uses FastAPI on success', () async {
+    test('getCourseById routes to supabase', () async {
       final fastApi = _FakeCourseRepo(courses: _testCourses);
       final supabase = _FakeCourseRepo(courses: _testCourses);
 
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
+      final compat = CourseRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-      expect(fastApi.callCount, 1);
-      expect(supabase.callCount, 0);
-    });
-
-    test('fastapiPreferred falls back to Supabase on NetworkException', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const NetworkException('timeout'),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-      expect(fastApi.callCount, 1);
+      final course = await compat.getCourseById('1');
+      expect(course.id, '1');
+      expect(fastApi.callCount, 0);
       expect(supabase.callCount, 1);
     });
 
-    test('fastapiPreferred falls back on 401 Unauthorized', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const ApiException('Unauthorized', statusCode: 401),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-      expect(supabase.callCount, 1);
-    });
-
-    test('fastapiPreferred falls back on 404 Not Found', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const ApiException('Not found', statusCode: 404),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-    });
-
-    test('fastapiPreferred falls back on 500 Server Error', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const ApiException('Internal error', statusCode: 500),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-    });
-
-    test('fastapiPreferred falls back on ParseException', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const ParseException('bad json'),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
-
-      final result = await compat.getCourses(const CourseFilter());
-      expect(result.items.length, 2);
-    });
-
-    test('fastapiOnly does NOT fallback — propagates error', () async {
-      final fastApi = _FakeCourseRepo(
-        error: const NetworkException('timeout'),
-      );
-      final supabase = _FakeCourseRepo(courses: _testCourses);
-
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiOnly,
-      );
-
-      expect(
-        () => compat.getCourses(const CourseFilter()),
-        throwsA(isA<NetworkException>()),
-      );
-    });
-
-    test('getCourseById routes correctly', () async {
+    test('getCategories routes to supabase', () async {
       final fastApi = _FakeCourseRepo(courses: _testCourses);
       final supabase = _FakeCourseRepo(courses: _testCourses);
 
-      final compat = CourseRepositoryCompat(
-        fastApi: fastApi,
-        supabase: supabase,
-        mode: BackendMode.fastapiPreferred,
-      );
+      final compat = CourseRepositoryCompat(fastApi: fastApi, supabase: supabase);
 
-      final result = await compat.getCourseById('1');
-      expect(result.id, '1');
-      expect(fastApi.callCount, 1);
+      final cats = await compat.getCategories();
+      expect(cats, ['Tech', 'Business']);
+      expect(fastApi.callCount, 0);
+      expect(supabase.callCount, 1);
     });
   });
 

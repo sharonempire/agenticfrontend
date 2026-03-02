@@ -1,88 +1,31 @@
 import 'package:logger/logger.dart';
-
-import '../../config/backend_mode.dart';
-import '../../config/feature_flags.dart';
+import '../../core/config/app_config.dart';
 import '../../core/error/app_exception.dart';
 import '../../core/error/fallback_helper.dart';
 import '../../models/common/paginated_response.dart';
 import '../../models/job/job.dart';
-import '../job_repository.dart';
+import '../interfaces/job_repository.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
-/// Compatibility adapter for jobs.
-/// Routes calls through FastAPI when enabled, falls back to Supabase.
 class JobRepositoryCompat implements JobRepository {
-  JobRepositoryCompat({
-    required this.fastApi,
-    required this.supabase,
-    required this.mode,
-  });
-
+  JobRepositoryCompat({required this.fastApi, required this.supabase});
   final JobRepository fastApi;
   final JobRepository supabase;
-  final BackendMode mode;
 
-  BackendMode get _effectiveMode =>
-      FeatureFlags.jobFinderFastApi ? mode : BackendMode.supabaseOnly;
+  BackendMode get _mode => AppConfig.jobFinderFastApi ? AppConfig.backendMode : BackendMode.supabaseOnly;
 
-  @override
-  Future<PaginatedResponse<Job>> getJobs(JobFilter filter) =>
-      _tryWithFallback('getJobs', () => fastApi.getJobs(filter), () => supabase.getJobs(filter));
+  @override Future<PaginatedResponse<Job>> getJobs(JobFilter f) => _try('getJobs', () => fastApi.getJobs(f), () => supabase.getJobs(f));
+  @override Future<Job> getJobById(String id) => _try('getJobById', () => fastApi.getJobById(id), () => supabase.getJobById(id));
+  @override Future<List<Job>> getSavedJobs() => _try('getSavedJobs', () => fastApi.getSavedJobs(), () => supabase.getSavedJobs());
+  @override Future<List<Job>> getAppliedJobs() => _try('getAppliedJobs', () => fastApi.getAppliedJobs(), () => supabase.getAppliedJobs());
+  @override Future<void> saveJob(String id) => _try('saveJob', () => fastApi.saveJob(id), () => supabase.saveJob(id));
+  @override Future<void> unsaveJob(String id) => _try('unsaveJob', () => fastApi.unsaveJob(id), () => supabase.unsaveJob(id));
 
-  @override
-  Future<Job> getJobById(String id) =>
-      _tryWithFallback('getJobById', () => fastApi.getJobById(id), () => supabase.getJobById(id));
-
-  @override
-  Future<PaginatedResponse<Job>> searchJobs(String query, {int page = 1, int pageSize = 20}) =>
-      _tryWithFallback(
-        'searchJobs',
-        () => fastApi.searchJobs(query, page: page, pageSize: pageSize),
-        () => supabase.searchJobs(query, page: page, pageSize: pageSize),
-      );
-
-  @override
-  Future<List<Job>> getSavedJobs() =>
-      _tryWithFallback('getSavedJobs', () => fastApi.getSavedJobs(), () => supabase.getSavedJobs());
-
-  @override
-  Future<List<Job>> getAppliedJobs() =>
-      _tryWithFallback('getAppliedJobs', () => fastApi.getAppliedJobs(), () => supabase.getAppliedJobs());
-
-  @override
-  Future<void> saveJob(String jobId) =>
-      _tryWithFallback('saveJob', () => fastApi.saveJob(jobId), () => supabase.saveJob(jobId));
-
-  @override
-  Future<void> unsaveJob(String jobId) =>
-      _tryWithFallback('unsaveJob', () => fastApi.unsaveJob(jobId), () => supabase.unsaveJob(jobId));
-
-  Future<T> _tryWithFallback<T>(
-    String method,
-    Future<T> Function() fastApiCall,
-    Future<T> Function() supabaseCall,
-  ) async {
-    final effective = _effectiveMode;
-
-    if (effective == BackendMode.supabaseOnly) {
-      return supabaseCall();
-    }
-
-    try {
-      return await fastApiCall();
-    } on AppException catch (e) {
-      if (shouldFallback(e, effective)) {
-        logFallback('JobRepo', method, e);
-        return supabaseCall();
-      }
-      rethrow;
-    } catch (e) {
-      if (effective == BackendMode.fastapiPreferred) {
-        _log.w('[JobRepo.$method] Unexpected error ($e), falling back to Supabase');
-        return supabaseCall();
-      }
-      rethrow;
-    }
+  Future<T> _try<T>(String m, Future<T> Function() fast, Future<T> Function() supa) async {
+    if (_mode == BackendMode.supabaseOnly) return supa();
+    try { return await fast(); }
+    on AppException catch (e) { if (shouldFallback(e, _mode)) { logFallback('JobRepo', m, e); return supa(); } rethrow; }
+    catch (e) { if (_mode == BackendMode.fastapiPreferred) { _log.w('[JobRepo.$m] Unexpected ($e)'); return supa(); } rethrow; }
   }
 }
