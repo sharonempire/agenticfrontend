@@ -56,7 +56,7 @@ class JobListBloc extends Bloc<JobListEvent, JobListState> {
       final result = await _repo.getJobs(nextFilter);
       emit(state.copyWith(status: JobListStatus.loaded, jobs: [...state.jobs, ...result.items], filter: nextFilter, hasMore: result.hasMore));
     } catch (e) {
-      emit(state.copyWith(status: JobListStatus.loaded));
+      emit(state.copyWith(status: JobListStatus.loaded, errorMessage: 'Failed to load more: $e'));
     }
   }
 }

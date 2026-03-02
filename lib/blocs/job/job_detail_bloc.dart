@@ -51,6 +51,8 @@ class JobDetailBloc extends Bloc<JobDetailEvent, JobDetailState> {
     try {
       if (event.isSaved) { await _repo.unsaveJob(event.jobId); } else { await _repo.saveJob(event.jobId); }
       emit(JobDetailState(status: JobDetailStatus.loaded, job: state.job!.copyWith(isSaved: !event.isSaved)));
-    } catch (_) {}
+    } catch (e) {
+      emit(JobDetailState(status: JobDetailStatus.loaded, job: state.job, errorMessage: 'Save failed: $e'));
+    }
   }
 }

@@ -61,7 +61,7 @@ class CourseListBloc extends Bloc<CourseListEvent, CourseListState> {
       final result = await _repo.getCourses(nextFilter);
       emit(state.copyWith(status: CourseListStatus.loaded, courses: [...state.courses, ...result.items], filter: nextFilter, hasMore: result.hasMore));
     } catch (e) {
-      emit(state.copyWith(status: CourseListStatus.loaded));
+      emit(state.copyWith(status: CourseListStatus.loaded, errorMessage: 'Failed to load more: $e'));
     }
   }
 

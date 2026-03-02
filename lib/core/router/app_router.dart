@@ -36,6 +36,16 @@ class AppRouter {
   static final GoRouter router = GoRouter(
     navigatorKey: _rootKey,
     initialLocation: AppRoutes.splash,
+    redirect: (context, state) {
+      // Placeholder: when auth is implemented, check token here.
+      // For now, allow all routes. Uncomment below when auth is ready:
+      // final loggedIn = sl<TokenStorage>().hasToken;
+      // final onAuthPage = state.matchedLocation == AppRoutes.login ||
+      //     state.matchedLocation == AppRoutes.onboarding ||
+      //     state.matchedLocation == AppRoutes.splash;
+      // if (!loggedIn && !onAuthPage) return AppRoutes.login;
+      return null;
+    },
     routes: [
       GoRoute(path: AppRoutes.splash, builder: (_, __) => const SplashPage()),
       GoRoute(path: AppRoutes.onboarding, builder: (_, __) => const OnboardingPage()),

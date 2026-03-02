@@ -11,11 +11,14 @@ class FastApiCourseRepository implements CourseRepository {
   @override
   Future<PaginatedResponse<Course>> getCourses(CourseFilter filter) async {
     final response = await client.get<Map<String, dynamic>>('/courses/', queryParameters: filter.toQueryParams());
-    return PaginatedResponse.fromJson(response.data!, Course.fromJson);
+    final data = response.data;
+    if (data == null) return PaginatedResponse<Course>(items: [], total: 0, page: filter.page, pageSize: filter.pageSize);
+    return PaginatedResponse.fromJson(data, Course.fromJson);
   }
 
   @override
   Future<Course> getCourseById(String id) async {
+    if (id.contains('/') || id.contains('..')) throw const ApiException('Invalid course ID', statusCode: 400);
     final response = await client.get<Map<String, dynamic>>('/courses/$id');
     if (response.data == null) throw const ApiException('Course not found', statusCode: 404);
     return Course.fromJson(response.data!);

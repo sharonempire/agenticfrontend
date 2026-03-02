@@ -60,7 +60,8 @@ flutter:
   uses-material-design: true
 
   assets:
-    - .env
+    # NOTE: .env is loaded from the project root at runtime via flutter_dotenv.
+    # Do NOT list .env here — it embeds secrets into the compiled binary.
     - assets/images/logo/
     - assets/images/onboarding/
     - assets/images/placeholders/

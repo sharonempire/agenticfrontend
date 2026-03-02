@@ -64,7 +64,13 @@ class SupabaseJobRepository implements JobRepository {
   Future<void> saveJob(String jobId) async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) throw const SupabaseException('Not authenticated');
-    await _client.from('saved_jobs').insert({'user_id': userId, 'job_id': jobId});
+    try {
+      await _client.from('saved_jobs').insert({'user_id': userId, 'job_id': jobId});
+    } catch (e) {
+      // Ignore duplicate key (job already saved), rethrow others
+      if ('$e'.contains('duplicate') || '$e'.contains('unique')) return;
+      throw SupabaseException('Failed to save job: $e');
+    }
   }
 
   @override

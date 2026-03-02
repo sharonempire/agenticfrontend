@@ -5,7 +5,7 @@ class PaginatedResponse<T> {
   final int page;
   final int pageSize;
 
-  bool get hasMore => (page * pageSize) < total;
+  bool get hasMore => page * pageSize < total && total > 0;
 
   PaginatedResponse<R> map<R>(R Function(T) transform) => PaginatedResponse<R>(
     items: items.map(transform).toList(), total: total, page: page, pageSize: pageSize,
